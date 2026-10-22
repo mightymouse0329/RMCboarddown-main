@@ -1,0 +1,9 @@
+.DS_Store
+Thumbs.db
+build/
+.vscode/*
+!.vscode/settings.json
+!.vscode/c_cpp_properties.json
+!.vscode/launch.json
+!.vscode/tasks.json
+*.ioc.bak
