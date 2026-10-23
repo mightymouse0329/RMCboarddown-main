@@ -4,8 +4,8 @@
 namespace
 {
 // Auto mode: RC right switch UP starts a one-shot 5 s forward run.
-constexpr float AUTO_FORWARD_SPEED_MPS = 0.30f;  // 30 cm/s
-constexpr uint32_t AUTO_RUN_MS = 5000U;
+constexpr float AUTO_FORWARD_SPEED_MPS = 0.15f;  // 30 cm/s
+constexpr uint32_t AUTO_RUN_MS = 10000U;
 
 enum class AutoState : uint8_t
 {

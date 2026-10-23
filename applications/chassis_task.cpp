@@ -18,7 +18,7 @@ namespace
 constexpr float WHEEL_RADIUS_M = 0.077f;
 
 // ?????????????????
-constexpr float MAX_LINEAR_SPEED = 0.8f;
+constexpr float MAX_LINEAR_SPEED = 1.6f;
 constexpr float MAX_ANGULAR_SPEED = 5.0f;
 constexpr float GEAR_RATIO = 14.9f;
 constexpr float MAX_TORQUE = 0.8f;
@@ -126,6 +126,41 @@ extern "C" void chassis_control_diag(float * values)
 
 namespace
 {
+// Additional forward/back measured-power guard. This is independent of the
+// existing model/bias limiter and only reduces the final torque scale when the
+// power meter is already close to the hard 80 W limit.
+constexpr float TRANS_GUARD_NEAR_W = 78.0f;
+constexpr float TRANS_GUARD_RECOVER_W = 76.0f;
+constexpr float TRANS_GUARD_RECOVER_STEP = 0.02f;
+bool translation_guard_active = false;
+float translation_guard_scale = 1.0f;
+uint32_t translation_guard_last_seq = 0;
+
+void reset_translation_guard()
+{
+  translation_guard_active = false;
+  translation_guard_scale = 1.0f;
+  translation_guard_last_seq = 0;
+}
+
+void update_translation_guard(const power_meter::RealtimeData & meter, bool meter_ok)
+{
+  if (!meter_ok) return;
+  if (meter.received_frames == translation_guard_last_seq) return;
+  translation_guard_last_seq = meter.received_frames;
+
+  if (meter.power_w > TRANS_GUARD_NEAR_W) {
+    // Scale relative to the CURRENT guard, so repeated over-limit samples
+    // continue reducing torque instead of latching at the first ratio.
+    translation_guard_scale *= TRANS_GUARD_NEAR_W / meter.power_w;
+    if (translation_guard_scale < 0.0f) translation_guard_scale = 0.0f;
+  }
+  else if (meter.power_w < TRANS_GUARD_RECOVER_W) {
+    translation_guard_scale += TRANS_GUARD_RECOVER_STEP;
+    if (translation_guard_scale > 1.0f) translation_guard_scale = 1.0f;
+  }
+}
+
 float update_power_prediction(float fl, float fr, float rl, float rr)
 {
   const uint32_t now = osKernelSysTick();
@@ -143,11 +178,17 @@ float update_power_prediction(float fl, float fr, float rl, float rr)
   chassis_power::g_limit_result = chassis_power::limit(
     motors, valid, meter.power_w, meter_ok, meter.last_rx_ms, meter.received_frames, now);
   chassis_power::g_prediction = chassis_power::g_limit_result.before;
-  return chassis_power::g_limit_result.torque_scale;
+  float scale = chassis_power::g_limit_result.torque_scale;
+  if (translation_guard_active) {
+    update_translation_guard(meter, meter_ok);
+    scale *= translation_guard_scale;
+  }
+  return scale;
 }
 
 void set_all_zero()
 {
+  reset_translation_guard();
   update_power_prediction(0.0f, 0.0f, 0.0f, 0.0f);
   // 清 PID 历史，避免下次起步带着旧状态
   pid_fl.clear();
@@ -192,6 +233,7 @@ void chassis_update()
 
   if (g_data.sw_r == 2) {
     if (g_data.auto_trigger != 0) {
+      translation_guard_active = std::fabs(g_data.auto_vx) > 0.01f;
       drive_with(g_data.auto_vx * DIR_VX, g_data.auto_vy * DIR_VY, g_data.auto_omega * DIR_OMEGA);
     }
     else {
@@ -209,6 +251,7 @@ void chassis_update()
     float target_vy = apply_deadzone(g_data.ch_lh) * MAX_LINEAR_SPEED * DIR_VY;
     float target_omega = apply_deadzone(g_data.ch_lu) * MAX_ANGULAR_SPEED * DIR_OMEGA;
 
+    translation_guard_active = std::fabs(target_vx) > 0.01f;
     drive_with(target_vx, target_vy, target_omega);
     return;
   }
